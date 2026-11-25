@@ -1,0 +1,74 @@
+name: asdbd-quarta-prova
+
+x-hdfs: &hdfs
+  image: apache/hadoop:3.4.2-lean
+  user: '0:0'
+  entrypoint: ["/bin/bash", "-ec"]
+  cpus: 1.0
+  mem_limit: 1g
+  environment:
+    HADOOP_CONF_DIR: /lab-conf
+    HADOOP_HEAPSIZE_MAX: '384'
+
+services:
+  namenode:
+    <<: *hdfs
+    hostname: namenode
+    command:
+      - |
+        if [ ! -f /data/name/current/VERSION ]; then
+          hdfs namenode -format -nonInteractive
+        fi
+        exec hdfs namenode
+    volumes:
+      - ./docker/hadoop:/lab-conf:ro
+      - namenode:/data/name
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ': > /dev/tcp/namenode/8020'"]
+      interval: 5s
+      timeout: 3s
+      retries: 18
+
+  datanode:
+    <<: *hdfs
+    hostname: datanode
+    depends_on:
+      namenode:
+        condition: service_healthy
+    command: ["exec hdfs datanode"]
+    volumes:
+      - ./docker/hadoop:/lab-conf:ro
+      - datanode:/data/data
+    healthcheck:
+      test: ["CMD-SHELL", "hdfs dfsadmin -safemode get | grep -q 'Safe mode is OFF' && hdfs dfsadmin -report -live | grep -q 'Live datanodes (1)'"]
+      interval: 10s
+      timeout: 8s
+      retries: 18
+
+  notebook:
+    build: .
+    image: asdbd-quarta-prova-notebook:1.0
+    init: true
+    cpus: 4.0
+    mem_limit: 4g
+    depends_on:
+      datanode:
+        condition: service_healthy
+    environment:
+      HADOOP_CONF_DIR: /lab-conf
+      PYSPARK_SUBMIT_ARGS: '--driver-memory 2g pyspark-shell'
+    ports:
+      - '127.0.0.1:8888:8888'
+    volumes:
+      - .:/workspace
+      - ./docker/hadoop:/lab-conf:ro
+    command: ["jupyter", "lab", "--allow-root", "--ip=0.0.0.0", "--no-browser", "--ServerApp.root_dir=/workspace"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/lab', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  namenode:
+  datanode:
