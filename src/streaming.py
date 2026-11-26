@@ -5,7 +5,7 @@ from threading import Thread
 from time import monotonic, sleep
 
 from src.config import begin_run, hdfs_access, save_manifest, utc_now
-from src.live import ProgressLog, report_live
+from src.live import ProgressLog, StreamingCharts, report_live
 from src.trips import prepare_archive, read_trip_stream, start_generator
 from src.windows import sliding, start_updates, tumbling
 
@@ -51,12 +51,17 @@ def run_streams(spark, config, on_update=None):
     paths, manifest = begin_run(spark, config)
     queries = {}
     progress = ProgressLog(paths)
+    charts = StreamingCharts(paths, config.duration_seconds)
     target = config.target_trip_count
     generation_started = None
     failure = None
     try:
         prepare_archive(spark, paths)
         generation_started = monotonic()
+
+        def elapsed():
+            return monotonic() - generation_started
+
         manifest["generation_started_at_utc"] = utc_now().isoformat()
         queries["generator"] = start_generator(spark, config, paths)
         trips = read_trip_stream(spark, paths)
@@ -77,12 +82,13 @@ def run_streams(spark, config, on_update=None):
             now = monotonic()
             observed = sum(row["archived_rows"] or 0 for row in progress.for_query("generator"))
             manifest["archived_rows_observed"] = observed
+            charts.export_due(spark, progress, elapsed)
             if observed >= target:
                 break
             if now >= publish_deadline:
                 raise TimeoutError(f"Pubblicazione incompleta: confermate {observed} corse su {target}.")
             if on_update and now >= next_display and all(progress.for_query(name) for name in queries):
-                on_update(report_live(spark, paths, progress))
+                on_update(report_live(spark, paths, progress, charts))
                 next_display = monotonic() + config.live_seconds
             sleep(0.5)
 
@@ -98,6 +104,8 @@ def run_streams(spark, config, on_update=None):
             raise RuntimeError(f"L'archivio HDFS non contiene esattamente gli ID da 0 a {target - 1}.")
         manifest["generation_duration_seconds"] = round(monotonic() - generation_started, 3)
         manifest["generation_verified_at_utc"] = utc_now().isoformat()
+        progress.capture(queries)
+        charts.export_due(spark, progress, elapsed)
         queries["generator"].stop()
         save_manifest(paths, manifest)
         drain([queries["tumbling"], queries["sliding"]], config.drain_timeout_seconds)

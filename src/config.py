@@ -11,6 +11,8 @@ from pyspark.sql import SparkSession
 
 HDFS_ROOT = "hdfs://namenode:8020/lab/runs"
 RESULTS_ROOT = Path(__file__).resolve().parents[1] / "results"
+ALLOWED_DURATION_MINUTES = (2, 4, 6, 8, 10)
+ROWS_PER_SECOND = 50
 
 
 def utc_now():
@@ -20,16 +22,28 @@ def utc_now():
 @dataclass(frozen=True)
 class LabConfig:
     duration_seconds: int = 600
-    rows_per_second: int = 10
+    rows_per_second: int = ROWS_PER_SECOND
     trigger_seconds: int = 10
     watermark_seconds: int = 120
     live_seconds: int = 25
     drain_timeout_seconds: int = 120
 
     def __post_init__(self):
+        if type(self.duration_seconds) is not int or self.duration_seconds not in (
+            minutes * 60 for minutes in ALLOWED_DURATION_MINUTES
+        ):
+            raise ValueError("Durata non valida. Scegli 2, 4, 6, 8 o 10 minuti.")
+        if type(self.rows_per_second) is not int or self.rows_per_second != ROWS_PER_SECOND:
+            raise ValueError("La frequenza è fissata a 50 corse al secondo.")
         for key, value in asdict(self).items():
             if type(value) is not int or value < 1:
                 raise ValueError(f"{key} deve essere un intero positivo.")
+
+    @classmethod
+    def from_minutes(cls, minutes, **settings):
+        if type(minutes) is not int or minutes not in ALLOWED_DURATION_MINUTES:
+            raise ValueError("Durata non valida. Scegli 2, 4, 6, 8 o 10 minuti.")
+        return cls(duration_seconds=minutes * 60, **settings)
 
     @property
     def target_trip_count(self):
